@@ -5,7 +5,8 @@ pedaço do caminho é um link para o caminho até ele: em `~/projetos/loja/qa/re
 essa pasta no gerenciador de arquivos, e clicar em `relatorio.md` abre o arquivo no app padrão.
 
 - **Clique simples:** abre. Arquivo vai para o app padrão do tipo dele, pasta vai para o gerenciador de arquivos
-  (pelo `xdg-open`; no macOS, `open`). Um aviso "Abrindo …" aparece no canto.
+  (pelo `xdg-open`; no macOS, `open`; no Windows, `Invoke-Item` no PowerShell). Um aviso "Abrindo …" aparece no
+  canto.
 - **Mouse por cima:** o pedaço que vai abrir fica sublinhado.
 - **Ctrl+clique:** continua com o Claude Code e o terminal, como antes.
 
@@ -21,6 +22,8 @@ EffectCraft.</sub>
 
 - caminho solto: absoluto (`/home/...`), na pasta pessoal (`~/...`) ou relativo com barra (`hooks/register.tsx`,
   a partir da pasta da sessão), com ou sem `:linha` no fim;
+- no Windows, também `C:\...` ou `C:/...`, `~\...`, relativo com barra invertida (`src\a.ts`) e o `/c/...` do Git
+  Bash;
 - caminho entre crases;
 - o endereço de um link markdown que aponta para um caminho (`[o guia](/home/...)`), que vira um link só.
 
@@ -42,12 +45,17 @@ Ghostty, WezTerm, iTerm2, Warp, Windows Terminal, JetBrains e VS Code. Num termi
 sairia como "texto (endereço)", então ali o mod não mexe. Se o terminal entende OSC 8 e o Claude Code não sabe
 disso, `FORCE_HYPERLINK=1` no ambiente liga os links. É o caso do terminal dos agentes do Bullpen até a 2.4.5.
 
+No Windows vale o mesmo: no Windows Terminal, no VS Code e nos JetBrains os caminhos viram links, e no console antigo
+(conhost), que não mostra link, o mod fica de fora. O porte para o Windows passou nos testes automáticos, mas ainda
+não rodou num Windows de verdade.
+
 ## Como funciona, e os limites
 
 O Claude Code desenha cada parte de uma resposta pelo site `AssistantMessage`. Quando o texto tem um caminho que
 existe, o mod desenha a parte ele mesmo, como o Claude Code desenha (o `●` na primeira linha e o texto ao lado),
 com um `Markdown` do mod em que cada pedaço do caminho é um link `file://`. O clique simples num desses links chega
-ao mod (`onLinkPress`), que roda o `xdg-open` com `setsid`, para o app não fechar junto com o terminal. Resposta sem
+ao mod (`onLinkPress`), que roda o `xdg-open` com `setsid`, para o app não fechar junto com o terminal. No Windows,
+roda o PowerShell 5.1 com o caminho na variável `CAMINHOS_ALVO`, nunca na linha de comando. Resposta sem
 caminho fica com o desenho do próprio Claude Code.
 
 Nas partes que o mod desenha:

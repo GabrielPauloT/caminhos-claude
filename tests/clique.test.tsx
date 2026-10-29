@@ -24,15 +24,25 @@ const PTYXIS = { HOME: '/home/gabriel', TERM: 'xterm-256color', VTE_VERSION: '80
  * O motor de mentira: pasta pessoal, pasta da sessão e um disco onde só a lista existe. Guarda o
  * que o mod mandou rodar e os avisos que deu; `saida` é o código com que o script de abrir sai.
  */
-function motor(on: On, existentes: Record<string, 'file' | 'dir'>, saida = 0, ambiente: Record<string, string> = PTYXIS) {
+function motor(
+  on: On,
+  existentes: Record<string, 'file' | 'dir'>,
+  saida = 0,
+  ambiente: Record<string, string> = PTYXIS,
+  cwd = '/home/gabriel',
+) {
   const rodados: string[][] = []
+  const variaveis: (Record<string, string> | undefined)[] = []
   const avisos: string[] = []
   mock.env(on, ambiente)
   mock.clock(on)
-  on('session.cwd', () => ({ value: '/home/gabriel' }))
-  on('fs.stat', (_, e) => ({ value: { kind: existentes[e.path] ?? 'other', size: 0, mtimeMs: 0, isLink: false } }))
+  on('session.cwd', () => ({ value: cwd }))
+  // Num Linux o kit resolve `C:\…` como relativo à pasta do processo (no Windows o caminho chega como está).
+  const tipo = (caminho: string) => existentes[caminho] ?? existentes[caminho.slice(caminho.search(/[A-Za-z]:\\/))]
+  on('fs.stat', (_, e) => ({ value: { kind: tipo(e.path) ?? 'other', size: 0, mtimeMs: 0, isLink: false } }))
   on('process.run', (_, e) => {
     rodados.push([...e.argv])
+    variaveis.push(e.init?.env)
 
     return { value: { exitCode: saida, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -42,7 +52,7 @@ function motor(on: On, existentes: Record<string, 'file' | 'dir'>, saida = 0, am
     return { value: undefined }
   })
 
-  return { rodados, avisos }
+  return { rodados, variaveis, avisos }
 }
 
 test('o caminho que existe vira um link por pedaço e o clique abre até o pedaço', async ($, on) => {
@@ -133,5 +143,24 @@ test('o Bullpen com FORCE_HYPERLINK=1 ganha os links', async ($, on) => {
   const ui = await $.ui.mount(resposta(GUIA))
 
   expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe(LINKS_DO_GUIA)
+  await ui.unmount()
+})
+
+test('no Windows o caminho C:\\ vira link e o clique abre pelo PowerShell, com o caminho numa variável', async ($, on) => {
+  const arquivo = 'C:\\Users\\gabri\\work\\guia.md'
+  const windows = { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\gabri', WT_SESSION: 'x' }
+  const { rodados, variaveis, avisos } = motor(on, { [arquivo]: 'file' }, 0, windows, 'C:\\Users\\gabri')
+  const ui = await $.ui.mount(resposta(`O guia: ${arquivo}`))
+
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe(
+    'O guia: [C:](file:///C:/)[\\Users](file:///C:/Users)[\\gabri](file:///C:/Users/gabri)' +
+      '[\\work](file:///C:/Users/gabri/work)[\\guia.md](file:///C:/Users/gabri/work/guia.md)',
+  )
+  await ui.press({ key: CHAVE, link: { href: 'file:///C:/Users/gabri/work/guia.md' } })
+  await ui.press({ key: CHAVE, link: { href: 'file:///C:/Users/gabri/work' } })
+  expect(rodados.map(argv => argv[0])).toEqual(['powershell.exe', 'powershell.exe'])
+  expect(rodados[0]?.slice(1, -1)).toEqual(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand'])
+  expect(variaveis).toEqual([{ CAMINHOS_ALVO: arquivo }, { CAMINHOS_ALVO: 'C:\\Users\\gabri\\work' }])
+  expect(avisos).toEqual(['Abrindo guia.md', 'Abrindo work'])
   await ui.unmount()
 })

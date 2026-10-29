@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-import { absoluto, acharCaminhos, deHref, ligar, paraHref, terminalTemLink } from './caminhos'
+import { absoluto, acharCaminhos, deHref, ligar, paraHref, terminalTemLink, utf16Base64 } from './caminhos'
 import type { Bases, Tipo } from './caminhos'
 
 type Motor = EngineInterface
@@ -23,11 +23,28 @@ command -v open >/dev/null 2>&1 && exec open "$1" </dev/null >/dev/null 2>&1
 exit 3
 `
 
+// No Windows, o mesmo pelo PowerShell 5.1, que todo Windows tem: o caminho vai na variável CAMINHOS_ALVO, nunca na
+// linha de comando, e o Invoke-Item abre o arquivo no app padrão e a pasta no Explorador. Os mesmos códigos de saída.
+const PS_ABRIR = String.raw`$ErrorActionPreference = 'Stop'
+$alvo = $env:CAMINHOS_ALVO
+if (-not ([System.IO.File]::Exists($alvo) -or [System.IO.Directory]::Exists($alvo))) { exit 2 }
+try { Invoke-Item -LiteralPath $alvo } catch { exit 3 }
+exit 0
+`
+
 /** O que o mod guarda enquanto o módulo vive; o `register` zera a cada recarga. */
-const mem: { vistos: Map<string, Visto>; home: string | undefined | null; temLink: boolean | undefined } = {
-  vistos: new Map(),
-  home: null,
-  temLink: undefined,
+const mem: {
+  vistos: Map<string, Visto>
+  home: string | undefined | null
+  temLink: boolean | undefined
+  windows: boolean | undefined
+} = { vistos: new Map(), home: null, temLink: undefined, windows: undefined }
+
+/** Se o Claude Code roda no Windows (lá o OS vale Windows_NT). */
+async function ehWindows($: Motor): Promise<boolean> {
+  mem.windows ??= (await $.env.get('OS')) === 'Windows_NT'
+
+  return mem.windows
 }
 
 /** Se o terminal mostra link de verdade, pelas variáveis que o Claude Code olha (lidas uma vez por carga). */
@@ -48,7 +65,11 @@ async function temLink($: Motor): Promise<boolean> {
 }
 
 async function basesDe($: Motor): Promise<Bases> {
-  if (mem.home === null) mem.home = (await $.env.get('HOME')) || undefined
+  // No Windows a pasta pessoal é o USERPROFILE (o HOME costuma existir só no Git Bash).
+  if (mem.home === null) {
+    const home = await $.env.get('HOME')
+    mem.home = ((await ehWindows($)) ? (await $.env.get('USERPROFILE')) || home : home) || undefined
+  }
 
   return { home: mem.home, cwd: await $.session.cwd() }
 }
@@ -76,9 +97,13 @@ async function tipoDe($: Motor, caminho: string, agora: number): Promise<Tipo | 
 async function abrir($: Motor, href: string): Promise<void> {
   const caminho = deHref(href)
   if (caminho === undefined) return
-  const nome = caminho.split('/').filter(Boolean).pop() ?? caminho
+  const nome = caminho.split(/[\\/]/).filter(Boolean).pop() ?? caminho
   void $.ui.toast(`Abrindo ${nome}`)
-  const r = await $.process.run(['sh', '-c', SCRIPT_ABRIR, 'sh', caminho], { timeoutMs: 15_000 }).catch(() => undefined)
+  const rodar = (await ehWindows($))
+    ? $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
+      utf16Base64(PS_ABRIR)], { env: { CAMINHOS_ALVO: caminho }, timeoutMs: 15_000 })
+    : $.process.run(['sh', '-c', SCRIPT_ABRIR, 'sh', caminho], { timeoutMs: 15_000 })
+  const r = await rodar.catch(() => undefined)
   // O aviso já sai com o nome do mod no título.
   if (r === undefined) void $.ui.toast(`${nome} não abriu a tempo`)
   else if (r.exitCode === 2) void $.ui.toast(`${nome} não existe mais`)
@@ -89,17 +114,19 @@ export const register: Register = on => {
   mem.vistos = new Map()
   mem.home = null
   mem.temLink = undefined
+  mem.windows = undefined
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     // Só no terminal: desktop, VS Code e celular abrem os links do jeito deles. E só onde o Claude Code escreve
     // link de verdade: nos outros (o do Bullpen sem FORCE_HYPERLINK) cada pedaço sairia seguido do endereço.
     if (e.surface !== 'terminal' || e.props.isSummary || !(await temLink($))) return next(e)
-    const achados = acharCaminhos(e.props.text)
+    const windows = await ehWindows($)
+    const achados = acharCaminhos(e.props.text, windows)
     if (achados.length === 0) return next(e)
 
     const bases = await basesDe($)
     const agora = await $.clock.now()
-    const absolutos = new Map(achados.map(({ caminho }) => [caminho, absoluto(caminho, bases)] as const))
+    const absolutos = new Map(achados.map(({ caminho }) => [caminho, absoluto(caminho, bases, windows)] as const))
     const tipos = new Map<string, Tipo | undefined>()
     const conferir = new Set([...absolutos.values()].filter(caminho => caminho !== undefined))
     await Promise.all([...conferir].map(async caminho => tipos.set(caminho, await tipoDe($, caminho, agora))))
@@ -112,10 +139,11 @@ export const register: Register = on => {
         return abs !== undefined && tipos.get(abs) !== undefined
       },
       caminho => {
-        const abs = absoluto(caminho, bases)
+        const abs = absoluto(caminho, bases, windows)
 
         return abs === undefined ? undefined : paraHref(abs)
       },
+      windows,
     )
     if (hrefs.length === 0) return next(e)
 

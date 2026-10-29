@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { absoluto, acharCaminhos, deHref, ligar, paraHref, partes, terminalTemLink } from '../hooks/caminhos'
+import { absoluto, acharCaminhos, deHref, ligar, paraHref, partes, terminalTemLink, utf16Base64 } from '../hooks/caminhos'
 import type { Ligado } from '../hooks/caminhos'
 
 const BASES = { home: '/home/gabriel', cwd: '/home/gabriel/projeto' }
@@ -195,4 +195,73 @@ test('sem link de verdade: o Bullpen sem FORCE_HYPERLINK, tmux antigo, FORCE_HYP
   expect(terminalTemLink({ TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '1.71.2' })).toBe(false)
   expect(terminalTemLink({ FORCE_HYPERLINK: '0', VTE_VERSION: '8001' })).toBe(false)
   expect(terminalTemLink({ VTE_VERSION: '0.50.0' })).toBe(false)
+})
+
+const WIN = { home: 'C:\\Users\\gabri', cwd: 'C:\\Users\\gabri\\projeto' }
+
+/** Liga como o mod liga no Windows, fingindo que só os caminhos da lista existem. */
+function ligarNoWindows(texto: string, existentes: string[]): Ligado {
+  return ligar(
+    texto,
+    acharCaminhos(texto, true),
+    caminho => {
+      const abs = absoluto(caminho, WIN, true)
+
+      return abs !== undefined && existentes.includes(abs)
+    },
+    caminho => {
+      const abs = absoluto(caminho, WIN, true)
+
+      return abs === undefined ? undefined : paraHref(abs)
+    },
+    true,
+  )
+}
+
+test('Windows: C:\\ vira um link por pedaço, a unidade primeiro', () => {
+  const texto = 'Salvei em C:\\Users\\gabri\\loja\\qa\\relatorio.md.'
+
+  expect(acharCaminhos(texto, true).map(a => a.caminho)).toEqual(['C:\\Users\\gabri\\loja\\qa\\relatorio.md'])
+  expect(ligarNoWindows(texto, ['C:\\Users\\gabri\\loja\\qa\\relatorio.md']).texto).toBe(
+    'Salvei em [C:](file:///C:/)[\\Users](file:///C:/Users)[\\gabri](file:///C:/Users/gabri)' +
+      '[\\loja](file:///C:/Users/gabri/loja)[\\qa](file:///C:/Users/gabri/loja/qa)' +
+      '[\\relatorio.md](file:///C:/Users/gabri/loja/qa/relatorio.md).',
+  )
+})
+
+test('Windows: entre crases com espaço e barra normal, ~\\ e relativo com barra invertida', () => {
+  expect(ligarNoWindows('`C:/Program Files/App/app.exe`', ['C:\\Program Files\\App\\app.exe']).texto).toBe(
+    '[`C:`](file:///C:/)[`/Program Files`](file:///C:/Program%20Files)[`/App`](file:///C:/Program%20Files/App)' +
+      '[`/app.exe`](file:///C:/Program%20Files/App/app.exe)',
+  )
+  expect(ligarNoWindows('~\\Documents\\x.md', ['C:\\Users\\gabri\\Documents\\x.md']).texto).toBe(
+    '[~](file:///C:/Users/gabri)[\\Documents](file:///C:/Users/gabri/Documents)[\\x.md](file:///C:/Users/gabri/Documents/x.md)',
+  )
+  expect(ligarNoWindows('veja src\\a.ts:3', ['C:\\Users\\gabri\\projeto\\src\\a.ts']).texto).toBe(
+    'veja [src](file:///C:/Users/gabri/projeto/src)[\\a.ts:3](file:///C:/Users/gabri/projeto/src/a.ts)',
+  )
+})
+
+test('Windows: a barra invertida do fim não escapa o ] do link', () => {
+  expect(ligarNoWindows('em C:\\Users\\gabri\\ ok', ['C:\\Users\\gabri']).texto).toBe(
+    'em [C:](file:///C:/)[\\Users](file:///C:/Users)[\\gabri\\\\](file:///C:/Users/gabri) ok',
+  )
+})
+
+test('Windows: absoluto, endereço e o /c/ do Git Bash', () => {
+  expect(absoluto('/c/Users/gabri/a.md', WIN, true)).toBe('C:\\Users\\gabri\\a.md')
+  expect(absoluto('c:', WIN, true)).toBe('C:\\')
+  expect(absoluto('..\\outro\\.\\b.md', WIN, true)).toBe('C:\\Users\\gabri\\outro\\b.md')
+  expect(absoluto('\\Windows', WIN, true)).toBe('C:\\Windows')
+  expect(paraHref('C:\\')).toBe('file:///C:/')
+  expect(deHref('file:///C:/')).toBe('C:\\')
+  const caminho = 'C:\\Users\\gabri\\Área de Trabalho\\a (1).md'
+  expect(deHref(paraHref(caminho))).toBe(caminho)
+  expect(acharCaminhos('C:\\Users\\x e src\\y')).toEqual([]) // no Linux, sem barra normal não é caminho
+})
+
+test('utf16Base64 é o que o -EncodedCommand do PowerShell lê', () => {
+  expect(utf16Base64('a')).toBe('YQA=')
+  expect(utf16Base64('exit 0')).toBe('ZQB4AGkAdAAgADAA')
+  expect(utf16Base64('ã$env:CAMINHOS_ALVO')).toBe('4wAkAGUAbgB2ADoAQwBBAE0ASQBOAEgATwBTAF8AQQBMAFYATwA=')
 })

@@ -50,6 +50,10 @@ const TRECHO =
 // não vem letra, número, ponto, barra, til, dois-pontos, hífen nem barra invertida, senão é pedaço
 // de outra coisa (um endereço, uma data, uma palavra).
 const SOLTO = /(?<![\p{L}\p{N}_.\/~:\\-])(?:~\/|\/(?!\/)|[\p{L}\p{N}_@.+-]+\/)[^\s`<>"'|*()\[\]{}]*/gu
+// No Windows também com letra de unidade (`C:\` ou `C:/`), `~\` e relativo com barra invertida.
+const SOLTO_WINDOWS =
+  /(?<![\p{L}\p{N}_.\/~:\\-])(?:[A-Za-z]:[\\\/]|~[\\\/]|\/(?!\/)|[\p{L}\p{N}_@.+-]+[\\\/])[^\s`<>"'|*()\[\]{}]*/gu
+const UNIDADE = /^[A-Za-z]:(?:[\\/]|$)/
 
 const TERMINAIS_COM_LINK = ['ghostty', 'Hyper', 'kitty', 'alacritty', 'iTerm.app', 'iTerm2', 'WarpTerminal']
 
@@ -127,10 +131,12 @@ function temNome(caminho: string): boolean {
 }
 
 /** O caminho de um código entre crases, se ele inteiro tem cara de caminho. */
-function deCodigo(codigo: string): string | undefined {
+function deCodigo(codigo: string, windows: boolean): string | undefined {
   const s = codigo.trim()
   // Absoluto ou em ~/ pode ter espaço (as crases dizem onde termina); relativo, só sem espaço.
-  const temForma = /^(?:~\/|\/(?!\/))/.test(s) || /^[\p{L}\p{N}_@.+-]+\/\S*$/u.test(s)
+  const temForma = windows
+    ? /^(?:[A-Za-z]:[\\/]|~[\\/]|\/(?!\/))/.test(s) || /^[\p{L}\p{N}_@.+-]+[\\/]\S*$/u.test(s)
+    : /^(?:~\/|\/(?!\/))/.test(s) || /^[\p{L}\p{N}_@.+-]+\/\S*$/u.test(s)
   if (!temForma) return undefined
   const caminho = semLinha(s)
 
@@ -138,10 +144,11 @@ function deCodigo(codigo: string): string | undefined {
 }
 
 /** O caminho que o endereço de um link markdown leva, se é um caminho ou um `file://`. */
-function deDestino(destino: string): string | undefined {
+function deDestino(destino: string, windows: boolean): string | undefined {
   if (/^file:/i.test(destino)) return deHref(destino)
-  // Outro esquema (https:, mailto:) ou âncora (#...): não é caminho.
-  if (destino === '' || destino.startsWith('#') || ESQUEMA.test(destino)) return undefined
+  // Outro esquema (https:, mailto:) ou âncora (#...): não é caminho. No Windows, `C:` é a unidade.
+  const ehEsquema = ESQUEMA.test(destino) && !(windows && UNIDADE.test(destino))
+  if (destino === '' || destino.startsWith('#') || ehEsquema) return undefined
   let caminho = destino.replace(/#.*$/, '')
   try {
     caminho = decodeURIComponent(caminho)
@@ -153,23 +160,24 @@ function deDestino(destino: string): string | undefined {
   return temNome(caminho) ? caminho : undefined
 }
 
-function soltos(trecho: string, desloc: number, achados: Achado[]): void {
-  for (const m of trecho.matchAll(SOLTO)) {
+function soltos(trecho: string, desloc: number, achados: Achado[], windows: boolean): void {
+  for (const m of trecho.matchAll(windows ? SOLTO_WINDOWS : SOLTO)) {
     const bruto = m[0].replace(PONTUACAO_DO_FIM, '')
-    const caminho = desescapar(semLinha(bruto))
+    // No Windows a barra invertida separa pastas: não é o escape do markdown.
+    const caminho = windows ? semLinha(bruto) : desescapar(semLinha(bruto))
     if (!temNome(caminho)) continue
     achados.push({ inicio: desloc + m.index, fim: desloc + m.index + bruto.length, caminho, forma: 'rotulo' })
   }
 }
 
-function naLinha(linha: string, desloc: number, achados: Achado[]): void {
+function naLinha(linha: string, desloc: number, achados: Achado[], windows: boolean): void {
   let desde = 0
   for (const m of linha.matchAll(TRECHO)) {
-    soltos(linha.slice(desde, m.index), desloc + desde, achados)
+    soltos(linha.slice(desde, m.index), desloc + desde, achados, windows)
     desde = m.index + m[0].length
     const { crases, codigo, destino } = m.groups ?? {}
     if (codigo !== undefined) {
-      const caminho = deCodigo(codigo)
+      const caminho = deCodigo(codigo, windows)
       if (caminho !== undefined) achados.push({ inicio: desloc + m.index, fim: desloc + desde, caminho, forma: 'rotulo', crases })
       continue
     }
@@ -177,20 +185,20 @@ function naLinha(linha: string, desloc: number, achados: Achado[]): void {
     if (destino === undefined || faixa === undefined || m[0].startsWith('!')) continue
     // `[texto](<caminho com espaço>)`: troca só o que está dentro dos sinais.
     const embrulhado = destino.startsWith('<') ? 1 : 0
-    const caminho = deDestino(embrulhado ? destino.slice(1, -1) : destino)
+    const caminho = deDestino(embrulhado ? destino.slice(1, -1) : destino, windows)
     if (caminho !== undefined) {
       achados.push({ inicio: desloc + faixa[0] + embrulhado, fim: desloc + faixa[1] - embrulhado, caminho, forma: 'destino' })
     }
   }
-  soltos(linha.slice(desde), desloc + desde, achados)
+  soltos(linha.slice(desde), desloc + desde, achados, windows)
 }
 
 /**
  * Os caminhos do markdown de uma resposta, na ordem do texto: soltos, entre crases e no endereço
  * de um link. Bloco de código (```) e endereço da web ficam de fora. Se cada um existe, quem diz é
- * o disco: aqui só se olha a forma.
+ * o disco: aqui só se olha a forma. `windows` aceita também `C:\…`, `~\…` e relativo com barra invertida.
  */
-export function acharCaminhos(texto: string): Achado[] {
+export function acharCaminhos(texto: string, windows = false): Achado[] {
   const achados: Achado[] = []
   let cerca: { marca: string; tamanho: number } | undefined
   let inicio = 0
@@ -209,7 +217,7 @@ export function acharCaminhos(texto: string): Achado[] {
       cerca = { marca: marca.slice(0, 1), tamanho: marca.length }
       continue
     }
-    naLinha(linha, desloc, achados)
+    naLinha(linha, desloc, achados, windows)
     if (achados.length >= MAX_ACHADOS) return achados.slice(0, MAX_ACHADOS)
   }
 
@@ -217,7 +225,8 @@ export function acharCaminhos(texto: string): Achado[] {
 }
 
 /** O caminho absoluto e limpo (sem `.`, `..` e barras repetidas); undefined se `~/` sem pasta pessoal. */
-export function absoluto(caminho: string, bases: Bases): string | undefined {
+export function absoluto(caminho: string, bases: Bases, windows = false): string | undefined {
+  if (windows) return absolutoNoWindows(caminho, bases)
   let bruto: string
   if (caminho.startsWith('/')) bruto = caminho
   else if (caminho === '~' || caminho.startsWith('~/')) {
@@ -234,13 +243,40 @@ export function absoluto(caminho: string, bases: Bases): string | undefined {
   return `/${partes.join('/')}`
 }
 
+/** O mesmo no Windows: `C:\…` limpo, com a unidade em maiúscula; o `/c/…` do Git Bash vira `C:\…`. */
+function absolutoNoWindows(caminho: string, bases: Bases): string | undefined {
+  const gitBash = /^\/([A-Za-z])(?=\/|$)/.exec(caminho)
+  let bruto: string
+  if (UNIDADE.test(caminho)) bruto = caminho
+  else if (gitBash) bruto = `${gitBash[1]}:${caminho.slice(2)}`
+  else if (caminho === '~' || /^~[\\/]/.test(caminho)) {
+    if (!bases.home) return undefined
+    bruto = `${bases.home}\\${caminho.slice(2)}`
+  } else if (/^[\\/]/.test(caminho)) bruto = `${bases.cwd.slice(0, 2)}${caminho}` // na raiz da unidade da sessão
+  else bruto = `${bases.cwd}\\${caminho}`
+  const [unidade = '', ...resto] = bruto.split(/[\\/]/)
+  if (!/^[A-Za-z]:$/.test(unidade)) return undefined
+  const partes: string[] = []
+  for (const parte of resto) {
+    if (parte === '' || parte === '.') continue
+    if (parte === '..') partes.pop()
+    else partes.push(parte)
+  }
+
+  return `${unidade.toUpperCase()}\\${partes.join('\\')}`
+}
+
 /** O endereço `file://` de um caminho absoluto, cada parte codificada (espaço, acento, parênteses). */
 export function paraHref(caminho: string): string {
-  const partes = caminho
-    .split('/')
-    .map(parte => encodeURIComponent(parte).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`))
+  const codificar = (parte: string) =>
+    encodeURIComponent(parte).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  // No Windows, file:///C:/Users/…: a unidade como está e cada pasta codificada.
+  if (UNIDADE.test(caminho)) {
+    const [unidade = '', ...resto] = caminho.split(/[\\/]/)
+    return `file:///${unidade}/${resto.filter(Boolean).map(codificar).join('/')}`
+  }
 
-  return `file://${partes.join('/')}`
+  return `file://${caminho.split('/').map(codificar).join('/')}`
 }
 
 /** O caminho que um endereço `file://` leva, ou undefined se não for um. */
@@ -252,11 +288,15 @@ export function deHref(href: string): string | undefined {
     return undefined
   }
   if (url.protocol !== 'file:' || (url.hostname !== '' && url.hostname !== 'localhost')) return undefined
+  let caminho: string
   try {
-    return decodeURIComponent(url.pathname)
+    caminho = decodeURIComponent(url.pathname)
   } catch {
     return undefined
   }
+
+  // file:///C:/… é um caminho do Windows: C:\…
+  return /^\/[A-Za-z]:(?:\/|$)/.test(caminho) ? caminho.slice(1).replace(/\//g, '\\') : caminho
 }
 
 /**
@@ -264,13 +304,14 @@ export function deHref(href: string): string | undefined {
  * `/home`, `/gabriel` e `/a.md:12`. A barra vai com o nome que vem depois dela; a barra do fim e o
  * `:linha` ficam com o último pedaço.
  */
-export function partes(escrito: string): Parte[] {
+export function partes(escrito: string, windows = false): Parte[] {
   const linha = LINHA_DO_FIM.exec(escrito)?.[0] ?? ''
   const corpo = escrito.slice(0, escrito.length - linha.length)
+  const separa = (c: string | undefined) => c === '/' || (windows && c === '\\')
   const lista: Parte[] = []
   let inicio = 0
   for (let i = 1; i < corpo.length - 1; i++) {
-    if (corpo[i] !== '/' || corpo[i - 1] === '/') continue
+    if (!separa(corpo[i]) || separa(corpo[i - 1])) continue
     lista.push({ texto: corpo.slice(inicio, i), ate: corpo.slice(0, i) })
     inicio = i
   }
@@ -282,7 +323,12 @@ export function partes(escrito: string): Parte[] {
 type Link = { texto: string; href: string }
 
 /** Os links de um achado: um por pedaço do caminho ou, no endereço de um link pronto, um só. */
-function linksDe(trecho: string, achado: Achado, hrefDe: (caminho: string) => string | undefined): Link[] | undefined {
+function linksDe(
+  trecho: string,
+  achado: Achado,
+  hrefDe: (caminho: string) => string | undefined,
+  windows: boolean,
+): Link[] | undefined {
   if (achado.forma === 'destino') {
     const href = hrefDe(achado.caminho)
 
@@ -291,8 +337,8 @@ function linksDe(trecho: string, achado: Achado, hrefDe: (caminho: string) => st
   const crases = achado.crases ?? ''
   const escrito = crases === '' ? trecho : trecho.slice(crases.length, trecho.length - crases.length).trim()
   const links: Link[] = []
-  for (const parte of partes(escrito)) {
-    const href = hrefDe(crases === '' ? desescapar(parte.ate) : parte.ate)
+  for (const parte of partes(escrito, windows)) {
+    const href = hrefDe(crases === '' && !windows ? desescapar(parte.ate) : parte.ate)
     if (href === undefined) return undefined
     links.push({ texto: `${crases}${parte.texto}${crases}`, href })
   }
@@ -311,6 +357,7 @@ export function ligar(
   achados: readonly Achado[],
   existe: (caminho: string) => boolean,
   hrefDe: (caminho: string) => string | undefined,
+  windows = false,
 ): Ligado {
   const hrefs = new Set<string>()
   const cabem = (links: Link[]) => hrefs.size + new Set(links.map(l => l.href).filter(h => !hrefs.has(h))).size <= MAX_LINKS
@@ -319,7 +366,7 @@ export function ligar(
   for (const achado of achados) {
     if (achado.inicio < desde || !existe(achado.caminho)) continue
     const trecho = texto.slice(achado.inicio, achado.fim)
-    let links = linksDe(trecho, achado, hrefDe)
+    let links = linksDe(trecho, achado, hrefDe, windows)
     // Sem lugar para todos os pedaços, o caminho vira um link só; sem lugar nem para ele, fica texto.
     if (links !== undefined && !cabem(links)) {
       const href = hrefDe(achado.caminho)
@@ -331,9 +378,36 @@ export function ligar(
     const antes = texto.slice(desde, achado.inicio)
     // Um `!` logo antes do `[` faria do link uma imagem.
     saida += achado.forma === 'rotulo' && /(?<!\\)!$/.test(antes) ? `${antes.slice(0, -1)}\\!` : antes
-    saida += achado.forma === 'destino' ? links.map(l => l.href).join('') : links.map(l => `[${l.texto}](${l.href})`).join('')
+    saida += achado.forma === 'destino'
+      ? links.map(l => l.href).join('')
+      : links.map(l => `[${semBarraSoltaNoFim(l.texto)}](${l.href})`).join('')
     desde = achado.fim
   }
 
   return { texto: saida + texto.slice(desde), hrefs: [...hrefs] }
+}
+
+/** Rótulo que termina numa barra invertida sozinha (`C:\Users\`) a dobra: senão ela escaparia o `]` do link. */
+function semBarraSoltaNoFim(rotulo: string): string {
+  return (/\\+$/.exec(rotulo)?.[0].length ?? 0) % 2 === 1 ? `${rotulo}\\` : rotulo
+}
+
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+/** O texto em UTF-16LE e base64: o que o `-EncodedCommand` do PowerShell lê. */
+export function utf16Base64(texto: string): string {
+  const bytes: number[] = []
+  for (let i = 0; i < texto.length; i++) {
+    const codigo = texto.charCodeAt(i)
+    bytes.push(codigo & 0xff, codigo >> 8)
+  }
+  let saida = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const [a = 0, b, c] = [bytes[i], bytes[i + 1], bytes[i + 2]]
+    saida += BASE64[a >> 2]! + BASE64[((a & 3) << 4) | ((b ?? 0) >> 4)]!
+    saida += b === undefined ? '=' : BASE64[((b & 15) << 2) | ((c ?? 0) >> 6)]!
+    saida += c === undefined ? '=' : BASE64[c & 63]!
+  }
+
+  return saida
 }
