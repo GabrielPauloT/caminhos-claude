@@ -37,6 +37,11 @@ Ptyxis, Ctrl+clique). Desktop, VS Code e celular ficam como estão.
 Com a janela do terminal sem foco, o primeiro clique só traz a janela para frente: o Claude Code ignora esse clique
 de propósito. Clique de novo.
 
+O mod só liga os caminhos onde o Claude Code escreve link de verdade (OSC 8): Ptyxis e outros terminais VTE, kitty,
+Ghostty, WezTerm, iTerm2, Warp, Windows Terminal, JetBrains e VS Code. Num terminal que ele não reconhece, cada link
+sairia como "texto (endereço)", então ali o mod não mexe. Se o terminal entende OSC 8 e o Claude Code não sabe
+disso, `FORCE_HYPERLINK=1` no ambiente liga os links. É o caso do terminal dos agentes do Bullpen até a 2.4.5.
+
 ## Como funciona, e os limites
 
 O Claude Code desenha cada parte de uma resposta pelo site `AssistantMessage`. Quando o texto tem um caminho que

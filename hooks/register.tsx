@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-import { absoluto, acharCaminhos, deHref, ligar, paraHref } from './caminhos'
+import { absoluto, acharCaminhos, deHref, ligar, paraHref, terminalTemLink } from './caminhos'
 import type { Bases, Tipo } from './caminhos'
 
 type Motor = EngineInterface
@@ -24,7 +24,28 @@ exit 3
 `
 
 /** O que o mod guarda enquanto o módulo vive; o `register` zera a cada recarga. */
-const mem: { vistos: Map<string, Visto>; home: string | undefined | null } = { vistos: new Map(), home: null }
+const mem: { vistos: Map<string, Visto>; home: string | undefined | null; temLink: boolean | undefined } = {
+  vistos: new Map(),
+  home: null,
+  temLink: undefined,
+}
+
+/** Se o terminal mostra link de verdade, pelas variáveis que o Claude Code olha (lidas uma vez por carga). */
+async function temLink($: Motor): Promise<boolean> {
+  if (mem.temLink === undefined) {
+    const [FORCE_HYPERLINK, NETLIFY, CI, TEAMCITY_VERSION, TERM_PROGRAM, TERM_PROGRAM_VERSION, VTE_VERSION,
+      TERMINAL_EMULATOR, WT_SESSION, TMUX, LC_TERMINAL, TERM] = await Promise.all([
+      $.env.get('FORCE_HYPERLINK'), $.env.get('NETLIFY'), $.env.get('CI'), $.env.get('TEAMCITY_VERSION'),
+      $.env.get('TERM_PROGRAM'), $.env.get('TERM_PROGRAM_VERSION'), $.env.get('VTE_VERSION'),
+      $.env.get('TERMINAL_EMULATOR'), $.env.get('WT_SESSION'), $.env.get('TMUX'), $.env.get('LC_TERMINAL'),
+      $.env.get('TERM'),
+    ])
+    mem.temLink = terminalTemLink({ FORCE_HYPERLINK, NETLIFY, CI, TEAMCITY_VERSION, TERM_PROGRAM, TERM_PROGRAM_VERSION,
+      VTE_VERSION, TERMINAL_EMULATOR, WT_SESSION, TMUX, LC_TERMINAL, TERM })
+  }
+
+  return mem.temLink
+}
 
 async function basesDe($: Motor): Promise<Bases> {
   if (mem.home === null) mem.home = (await $.env.get('HOME')) || undefined
@@ -67,10 +88,12 @@ async function abrir($: Motor, href: string): Promise<void> {
 export const register: Register = on => {
   mem.vistos = new Map()
   mem.home = null
+  mem.temLink = undefined
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    // Só no terminal: desktop, VS Code e celular abrem os links do jeito deles.
-    if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
+    // Só no terminal: desktop, VS Code e celular abrem os links do jeito deles. E só onde o Claude Code escreve
+    // link de verdade: nos outros (o do Bullpen sem FORCE_HYPERLINK) cada pedaço sairia seguido do endereço.
+    if (e.surface !== 'terminal' || e.props.isSummary || !(await temLink($))) return next(e)
     const achados = acharCaminhos(e.props.text)
     if (achados.length === 0) return next(e)
 

@@ -17,14 +17,17 @@ function resposta(text: string, isFirstOfReply = true) {
   } as const
 }
 
+/** O ambiente do Ptyxis (VTE): o Claude Code escreve link de verdade. */
+const PTYXIS = { HOME: '/home/gabriel', TERM: 'xterm-256color', VTE_VERSION: '8001' }
+
 /**
  * O motor de mentira: pasta pessoal, pasta da sessão e um disco onde só a lista existe. Guarda o
  * que o mod mandou rodar e os avisos que deu; `saida` é o código com que o script de abrir sai.
  */
-function motor(on: On, existentes: Record<string, 'file' | 'dir'>, saida = 0): { rodados: string[][]; avisos: string[] } {
+function motor(on: On, existentes: Record<string, 'file' | 'dir'>, saida = 0, ambiente: Record<string, string> = PTYXIS) {
   const rodados: string[][] = []
   const avisos: string[] = []
-  mock.env(on, { HOME: '/home/gabriel' })
+  mock.env(on, ambiente)
   mock.clock(on)
   on('session.cwd', () => ({ value: '/home/gabriel' }))
   on('fs.stat', (_, e) => ({ value: { kind: existentes[e.path] ?? 'other', size: 0, mtimeMs: 0, isLink: false } }))
@@ -108,5 +111,27 @@ test('se o caminho sumiu, o clique avisa', async ($, on) => {
 
   await ui.press({ key: CHAVE, link: { href: `file://${GUIA}` } })
   expect(avisos).toEqual(['Abrindo guia.md', 'guia.md não existe mais'])
+  await ui.unmount()
+})
+
+test('num terminal sem link de verdade (o do Bullpen sem FORCE_HYPERLINK), quem desenha é o Claude Code', async ($, on) => {
+  motor(on, { [GUIA]: 'file' }, 0, { HOME: '/home/gabriel', TERM: 'xterm-256color' })
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>motor</Text>
+  })
+
+  const ui = await $.ui.mount(resposta(`O guia está pronto:\n\n${GUIA}\n`))
+  expect((await ui.find({ type: 'Text', text: /motor/ }))?.text).toBe('motor')
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('o Bullpen com FORCE_HYPERLINK=1 ganha os links', async ($, on) => {
+  motor(on, { [GUIA]: 'file' }, 0, { HOME: '/home/gabriel', TERM: 'xterm-256color', FORCE_HYPERLINK: '1' })
+  const ui = await $.ui.mount(resposta(GUIA))
+
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe(LINKS_DO_GUIA)
   await ui.unmount()
 })

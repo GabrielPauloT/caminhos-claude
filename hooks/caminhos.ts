@@ -27,6 +27,13 @@ export type Parte = { texto: string; ate: string }
 /** O texto com os links e os endereços que eles levam, na ordem e sem repetir. */
 export type Ligado = { texto: string; hrefs: string[] }
 
+/** As variáveis de ambiente pelas quais o Claude Code decide se o terminal mostra link de verdade (OSC 8). */
+export type Ambiente = Partial<Record<
+  'FORCE_HYPERLINK' | 'NETLIFY' | 'CI' | 'TEAMCITY_VERSION' | 'TERM_PROGRAM' | 'TERM_PROGRAM_VERSION' | 'VTE_VERSION' |
+  'TERMINAL_EMULATOR' | 'WT_SESSION' | 'TMUX' | 'LC_TERMINAL' | 'TERM',
+  string
+>>
+
 /** Quantos links clicáveis um `Markdown` aceita. */
 export const MAX_LINKS = 256
 /** Quantos caminhos de uma resposta vão para a conferência no disco. */
@@ -44,9 +51,65 @@ const TRECHO =
 // de outra coisa (um endereço, uma data, uma palavra).
 const SOLTO = /(?<![\p{L}\p{N}_.\/~:\\-])(?:~\/|\/(?!\/)|[\p{L}\p{N}_@.+-]+\/)[^\s`<>"'|*()\[\]{}]*/gu
 
+const TERMINAIS_COM_LINK = ['ghostty', 'Hyper', 'kitty', 'alacritty', 'iTerm.app', 'iTerm2', 'WarpTerminal']
+
 const PONTUACAO_DO_FIM = /[.,;:!?…]+$/u
 const LINHA_DO_FIM = /:\d+(?:[:-]\d+)?$/
 const ESQUEMA = /^[A-Za-z][\w+-]*:/
+
+function versao(texto: string): { major: number; minor: number } {
+  if (/^\d{3,4}$/.test(texto)) {
+    const m = /(\d{1,2})(\d{2})/.exec(texto)
+    return { major: 0, minor: Number(m?.[1] ?? 0) }
+  }
+  const [major, minor] = texto.split('.').map(n => parseInt(n, 10))
+  return { major: major ?? NaN, minor: minor ?? NaN }
+}
+
+/** O que a biblioteca supports-hyperlinks diz, num terminal com cor (o caso de uma sessão interativa). */
+function pelaBiblioteca(e: Ambiente): boolean {
+  if (e.FORCE_HYPERLINK) return !(parseInt(e.FORCE_HYPERLINK, 10) === 0)
+  if (e.NETLIFY) return true
+  if (e.WT_SESSION !== undefined) return true
+  if (e.CI || e.TEAMCITY_VERSION) return false
+  if (e.TERM_PROGRAM) {
+    const v = versao(e.TERM_PROGRAM_VERSION ?? '')
+    switch (e.TERM_PROGRAM) {
+      case 'iTerm.app':
+        return v.major === 3 ? v.minor >= 1 : v.major > 3
+      case 'WezTerm':
+        return v.major >= 20200620
+      case 'vscode':
+        return v.major > 1 || (v.major === 1 && v.minor >= 72)
+      case 'ghostty':
+        return true
+    }
+  }
+  if (e.VTE_VERSION) {
+    if (e.VTE_VERSION === '0.50.0') return false
+    const v = versao(e.VTE_VERSION)
+    return v.major > 0 || v.minor >= 50
+  }
+  return e.TERM === 'alacritty'
+}
+
+/**
+ * Se o Claude Code escreve link de verdade (OSC 8) neste terminal, pela mesma regra dele (2.1.312). Sem isso ele
+ * escreve "texto (endereço)", e cada pedaço do caminho sairia seguido do próprio endereço.
+ */
+export function terminalTemLink(e: Ambiente): boolean {
+  if (e.FORCE_HYPERLINK !== undefined) return pelaBiblioteca(e)
+  if (pelaBiblioteca(e)) return true
+  if (e.TERM_PROGRAM && TERMINAIS_COM_LINK.includes(e.TERM_PROGRAM)) return true
+  if (e.TERMINAL_EMULATOR === 'JetBrains-JediTerm') return true
+  if (e.WT_SESSION && e.TERM_PROGRAM !== 'tmux' && !e.TMUX) return true
+  if (e.TERM_PROGRAM === 'tmux') {
+    const [maior, menor] = (e.TERM_PROGRAM_VERSION ?? '').split('.').map(n => parseInt(n, 10))
+    if ((maior ?? 0) > 3 || (maior === 3 && (menor ?? 0) >= 4)) return true
+  }
+  if (e.LC_TERMINAL && TERMINAIS_COM_LINK.includes(e.LC_TERMINAL)) return true
+  return e.TERM?.includes('kitty') ?? false
+}
 
 /** O caminho sem o `:12`, `:12:5` ou `:12-20` que aponta a linha. */
 function semLinha(caminho: string): string {

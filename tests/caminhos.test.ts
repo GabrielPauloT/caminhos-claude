@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { absoluto, acharCaminhos, deHref, ligar, paraHref, partes } from '../hooks/caminhos'
+import { absoluto, acharCaminhos, deHref, ligar, paraHref, partes, terminalTemLink } from '../hooks/caminhos'
 import type { Ligado } from '../hooks/caminhos'
 
 const BASES = { home: '/home/gabriel', cwd: '/home/gabriel/projeto' }
@@ -175,4 +175,24 @@ test('o endereço volta para o mesmo caminho', () => {
   }
   expect(deHref('https://x.com/a')).toBeUndefined()
   expect(deHref('file://servidor/a')).toBeUndefined()
+})
+
+test('link de verdade: os terminais que o Claude Code reconhece', () => {
+  expect(terminalTemLink({ VTE_VERSION: '8001', TERM: 'xterm-256color' })).toBe(true) // Ptyxis, GNOME Terminal
+  expect(terminalTemLink({ TERM: 'xterm-kitty' })).toBe(true)
+  expect(terminalTemLink({ TERM_PROGRAM: 'ghostty' })).toBe(true)
+  expect(terminalTemLink({ TERM_PROGRAM: 'WarpTerminal' })).toBe(true)
+  expect(terminalTemLink({ TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '1.95.0' })).toBe(true)
+  expect(terminalTemLink({ TERMINAL_EMULATOR: 'JetBrains-JediTerm' })).toBe(true)
+  expect(terminalTemLink({ WT_SESSION: 'x' })).toBe(true)
+  expect(terminalTemLink({ TERM_PROGRAM: 'tmux', TERM_PROGRAM_VERSION: '3.4' })).toBe(true)
+  expect(terminalTemLink({ FORCE_HYPERLINK: '1', TERM: 'xterm-256color' })).toBe(true)
+})
+
+test('sem link de verdade: o Bullpen sem FORCE_HYPERLINK, tmux antigo, FORCE_HYPERLINK=0', () => {
+  expect(terminalTemLink({ TERM: 'xterm-256color' })).toBe(false) // o terminal dos agentes do Bullpen
+  expect(terminalTemLink({ TERM_PROGRAM: 'tmux', TERM_PROGRAM_VERSION: '3.3a' })).toBe(false)
+  expect(terminalTemLink({ TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '1.71.2' })).toBe(false)
+  expect(terminalTemLink({ FORCE_HYPERLINK: '0', VTE_VERSION: '8001' })).toBe(false)
+  expect(terminalTemLink({ VTE_VERSION: '0.50.0' })).toBe(false)
 })
