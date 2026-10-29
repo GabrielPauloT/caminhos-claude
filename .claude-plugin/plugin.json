@@ -1,0 +1,6 @@
+{
+  "name": "caminhos",
+  "version": "0.1.0",
+  "description": "Caminhos clicáveis nas respostas do Claude: um clique abre o arquivo no app padrão ou a pasta no gerenciador de arquivos.",
+  "author": { "name": "Gabriel" }
+}

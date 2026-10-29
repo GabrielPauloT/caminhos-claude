@@ -1,0 +1,6 @@
+{
+  "name": "caminhos-claude",
+  "description": "Mod local do Claude Code: caminhos clicáveis nas respostas, que abrem no PC",
+  "owner": { "name": "Gabriel" },
+  "plugins": [{ "name": "caminhos", "source": "./" }]
+}
